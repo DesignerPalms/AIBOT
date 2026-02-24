@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import tomllib
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -158,10 +160,34 @@ def parse_manual_command(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
     return None, {}
 
 
+
+def get_openai_api_key() -> Optional[str]:
+    """Load OPENAI_API_KEY from local secrets.toml, Streamlit secrets, or environment."""
+    try:
+        secrets_path = Path(__file__).resolve().parent / "secrets.toml"
+        if secrets_path.exists():
+            with secrets_path.open("rb") as f:
+                secrets_data = tomllib.load(f)
+            key = str(secrets_data.get("OPENAI_API_KEY", "")).strip()
+            if key:
+                return key
+    except Exception:
+        pass
+
+    try:
+        key = str(st.secrets.get("OPENAI_API_KEY", "")).strip()
+        if key:
+            return key
+    except Exception:
+        pass
+
+    return os.getenv("OPENAI_API_KEY")
+
+
 def translate_with_openai(user_text: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = get_openai_api_key()
     if not api_key:
-        return None, {}, "OPENAI_API_KEY is not set. AI mode was disabled."
+        return None, {}, "OPENAI_API_KEY not found in secrets.toml, Streamlit secrets, or environment. AI mode was disabled."
 
     try:
         from openai import OpenAI
