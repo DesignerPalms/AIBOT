@@ -323,9 +323,21 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
         except Exception as exc:
             last_err = str(exc)
 
+    fallback_answer = (
+        (last_raw or "").strip()
+        or f"I could not parse a structured JSON response from the model. Raw parser error: {last_err}"
+    )
     return {
-        "ok": False,
-        "error": f"AI returned invalid JSON after retry: {last_err}",
+        "ok": True,
+        "data": {
+            "answer": fallback_answer,
+            "insights": [
+                "Structured JSON parsing failed; showing best available model text.",
+                "Try a more specific question or a smaller filtered dataset for better chart/table output.",
+            ],
+            "tables": [],
+            "chart": {"type": "none", "title": "", "x": "", "y": "", "series": None, "data": ""},
+        },
         "raw": last_raw,
         "usage": last_usage_data,
     }
