@@ -92,7 +92,7 @@ def format_currency(value: float) -> str:
 
 
 def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
-    """Use raw dollars for smaller values; scale only when labels get too large."""
+    """Use raw dollars under 100k; otherwise apply readable scaled units."""
     max_abs = float(values.abs().max()) if len(values) else 0.0
 
     if max_abs >= 1_000_000:
@@ -100,7 +100,6 @@ def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
     if max_abs >= 100_000:
         return FuncFormatter(lambda y, _: f"{y / 100_000:,.1f}"), "(100,000s)"
 
-    # Keep raw values when they are small enough to stay readable.
     return FuncFormatter(lambda y, _: f"{y:,.0f}"), ""
 
 
@@ -130,6 +129,8 @@ def action_trend_show(df: pd.DataFrame, show_name: str) -> None:
     ax.yaxis.set_major_formatter(formatter)
     ax.set_title(f"Sales Trend: {show_name}")
     ax.set_xlabel("Year")
+    years = trend["Year"].dropna().astype(int).sort_values().unique()
+    ax.set_xticks(years)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.set_ylabel("Gross Sales" + (f" {unit_label}" if unit_label else ""))
     ax.grid(alpha=0.3)
@@ -141,7 +142,9 @@ def action_year_totals(df: pd.DataFrame) -> None:
     st.dataframe(totals, use_container_width=True)
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(totals["Year"].astype(str), totals["GrossSales"])
+    years = totals["Year"].dropna().astype(int).sort_values().unique()
+    ax.bar(totals["Year"], totals["GrossSales"])
+    ax.set_xticks(years)
     formatter, unit_label = get_sales_axis_formatter(totals["GrossSales"])
     ax.yaxis.set_major_formatter(formatter)
     ax.set_title("Total Sales by Year")
@@ -336,7 +339,9 @@ def main() -> None:
     # Total sales by year
     by_year = filtered.groupby("Year", as_index=False)["GrossSales"].sum().sort_values("Year")
     fig1, ax1 = plt.subplots(figsize=(8, 4))
-    ax1.bar(by_year["Year"].astype(str), by_year["GrossSales"])
+    years_main = by_year["Year"].dropna().astype(int).sort_values().unique()
+    ax1.bar(by_year["Year"], by_year["GrossSales"])
+    ax1.set_xticks(years_main)
     formatter1, unit_label1 = get_sales_axis_formatter(by_year["GrossSales"])
     ax1.yaxis.set_major_formatter(formatter1)
     ax1.set_title("Total Sales by Year")
@@ -389,6 +394,8 @@ def main() -> None:
             ax3.yaxis.set_major_formatter(formatter3)
             ax3.set_title(f"Trend for {show_choice}")
             ax3.set_xlabel("Year")
+            years_selected = trend["Year"].dropna().astype(int).sort_values().unique()
+            ax3.set_xticks(years_selected)
             ax3.xaxis.set_major_locator(MaxNLocator(integer=True))
             ax3.set_ylabel("Gross Sales" + (f" {unit_label3}" if unit_label3 else ""))
             ax3.grid(alpha=0.3)
