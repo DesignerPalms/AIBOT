@@ -1,8 +1,5 @@
 import json
-import os
 import re
-import tomllib
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -10,9 +7,18 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 import pandas as pd
 import streamlit as st
 
+from actions import (
+    run_cohort_by_attendance_number,
+    run_return_after_break,
+    run_show_trend,
+    run_top_shows,
+    run_year_totals,
+    run_yoy_by_show,
+)
+from ai_router import get_query_plan_with_ai
+
 
 def load_and_clean_data(uploaded_file) -> Tuple[Optional[pd.DataFrame], Dict[str, Any], Optional[str]]:
-    """Load, validate, and clean the uploaded Excel file."""
     quality = {
         "rows_original": 0,
         "rows_after_cleaning": 0,
@@ -24,40 +30,29 @@ def load_and_clean_data(uploaded_file) -> Tuple[Optional[pd.DataFrame], Dict[str
         "duplicate_rows": 0,
         "cleaning_steps": [],
     }
-
     try:
         df = pd.read_excel(uploaded_file, engine="openpyxl")
     except Exception as exc:
         return None, quality, f"Could not read Excel file: {exc}"
 
     quality["rows_original"] = len(df)
-
     required = {"Show", "Year", "GrossSales"}
     missing = required - set(df.columns)
     if missing:
-        return (
-            None,
-            quality,
-            "Missing required columns: " + ", ".join(sorted(missing)),
-        )
+        return None, quality, "Missing required columns: " + ", ".join(sorted(missing))
 
-    # Keep only required columns for a clean prototype.
     df = df[["Show", "Year", "GrossSales"]].copy()
-
-    # Normalize Show
     df["Show"] = df["Show"].astype(str).str.strip()
     blank_show_mask = df["Show"].eq("") | df["Show"].str.lower().eq("nan")
 
-    # Coerce Year to integer
     year_numeric = pd.to_numeric(df["Year"], errors="coerce")
     invalid_year_mask = year_numeric.isna()
     df["Year"] = year_numeric
 
-    # Coerce GrossSales to float, cleaning $, commas and spaces
     raw_gross = df["GrossSales"].copy()
     gross_before = pd.to_numeric(raw_gross, errors="coerce")
-    gross_as_text = raw_gross.astype(str).str.replace(r"[$,]", "", regex=True).str.strip()
-    gross_after = pd.to_numeric(gross_as_text, errors="coerce")
+    gross_text = raw_gross.astype(str).str.replace(r"[$,]", "", regex=True).str.strip()
+    gross_after = pd.to_numeric(gross_text, errors="coerce")
     corrected_mask = gross_before.isna() & gross_after.notna()
     gross_missing_mask = gross_after.isna()
     df["GrossSales"] = gross_after
@@ -69,21 +64,18 @@ def load_and_clean_data(uploaded_file) -> Tuple[Optional[pd.DataFrame], Dict[str
 
     drop_mask = blank_show_mask | gross_missing_mask | invalid_year_mask
     df = df.loc[~drop_mask].copy()
-
     df["Year"] = df["Year"].astype(int)
     df["GrossSales"] = df["GrossSales"].astype(float)
 
     quality["duplicate_rows"] = int(df.duplicated().sum())
     quality["rows_after_cleaning"] = len(df)
     quality["rows_dropped"] = quality["rows_original"] - quality["rows_after_cleaning"]
-
     quality["cleaning_steps"] = [
         "Validated required columns: Show, Year, GrossSales",
         "Coerced Year to integer",
         "Coerced GrossSales to float after removing '$' and ','",
         "Dropped rows with blank Show, invalid Year, or missing GrossSales",
     ]
-
     return df, quality, None
 
 
@@ -92,201 +84,91 @@ def format_currency(value: float) -> str:
 
 
 def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
-    """Use raw dollars under 100k; otherwise apply readable scaled units."""
     max_abs = float(values.abs().max()) if len(values) else 0.0
-
     if max_abs >= 1_000_000:
         return FuncFormatter(lambda y, _: f"{y / 1_000_000:,.1f}"), "(Millions)"
     if max_abs >= 100_000:
         return FuncFormatter(lambda y, _: f"{y / 100_000:,.1f}"), "(100,000s)"
-
     return FuncFormatter(lambda y, _: f"{y:,.0f}"), ""
 
 
-def action_top_shows(df: pd.DataFrame, n: int = 10) -> None:
-    top = (
-        df.groupby("Show", as_index=False)["GrossSales"]
-        .sum()
-        .sort_values("GrossSales", ascending=False)
-        .head(n)
-    )
-    st.write(f"Top {n} shows by total sales")
-    st.dataframe(top, use_container_width=True)
-
-
-def action_trend_show(df: pd.DataFrame, show_name: str) -> None:
-    show_df = df[df["Show"].str.lower() == show_name.lower()]
-    if show_df.empty:
-        st.warning(f"No rows found for show '{show_name}' in the current filtered dataset.")
+def plot_from_result(result: Dict[str, Any]) -> None:
+    chart = result.get("chart", {})
+    if chart.get("kind") == "none":
         return
 
-    trend = show_df.groupby("Year", as_index=False)["GrossSales"].sum().sort_values("Year")
-    st.dataframe(trend, use_container_width=True)
+    data = chart.get("data", result["table"])
+    if data is None or len(data) == 0:
+        st.info("No data to chart for this query.")
+        return
 
+    x, y, kind, title = chart.get("x"), chart.get("y"), chart.get("kind"), chart.get("title", "")
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(trend["Year"], trend["GrossSales"], marker="o")
-    formatter, unit_label = get_sales_axis_formatter(trend["GrossSales"])
+    if kind == "bar":
+        ax.bar(data[x], data[y])
+    elif kind == "line":
+        ax.plot(data[x], data[y], marker="o")
+    else:
+        return
+
+    formatter, unit_label = get_sales_axis_formatter(pd.Series(data[y]))
     ax.yaxis.set_major_formatter(formatter)
-    ax.set_title(f"Sales Trend: {show_name}")
-    ax.set_xlabel("Year")
-    years = trend["Year"].dropna().astype(int).sort_values().unique()
-    ax.set_xticks(years)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_title(title)
+    ax.set_xlabel(x)
     ax.set_ylabel("Gross Sales" + (f" {unit_label}" if unit_label else ""))
-    ax.grid(alpha=0.3)
+
+    if str(x).lower() in {"year", "attendance_number"}:
+        xvals = pd.Series(data[x]).dropna().astype(int).sort_values().unique()
+        ax.set_xticks(xvals)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    plt.xticks(rotation=45, ha="right")
     st.pyplot(fig)
 
 
-def action_year_totals(df: pd.DataFrame) -> None:
-    totals = df.groupby("Year", as_index=False)["GrossSales"].sum().sort_values("Year")
-    st.dataframe(totals, use_container_width=True)
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    years = totals["Year"].dropna().astype(int).sort_values().unique()
-    ax.bar(totals["Year"], totals["GrossSales"])
-    ax.set_xticks(years)
-    formatter, unit_label = get_sales_axis_formatter(totals["GrossSales"])
-    ax.yaxis.set_major_formatter(formatter)
-    ax.set_title("Total Sales by Year")
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Gross Sales" + (f" {unit_label}" if unit_label else ""))
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
-
-
-def action_biggest_yoy(df: pd.DataFrame) -> None:
-    by_show_year = df.groupby(["Show", "Year"], as_index=False)["GrossSales"].sum()
-    by_show_year = by_show_year.sort_values(["Show", "Year"])
-    by_show_year["YoYDelta"] = by_show_year.groupby("Show")["GrossSales"].diff()
-
-    result = by_show_year.dropna(subset=["YoYDelta"]).sort_values("YoYDelta", ascending=False)
-    st.write("Largest positive YoY increases")
-    st.dataframe(result.head(20), use_container_width=True)
-
-
-def parse_manual_command(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
+def parse_manual_command(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     t = text.strip()
-    t_lower = t.lower()
+    low = t.lower()
+    if low == "year totals":
+        return {"action": "year_totals", "params": {}}, None
+    if low == "top shows":
+        return {"action": "top_shows", "params": {"n": 10}}, None
+    if low == "biggest yoy increase":
+        return {"action": "yoy_by_show", "params": {"mode": "absolute"}}, None
 
-    if t_lower == "top shows":
-        return "top_shows", {}
-    if t_lower == "year totals":
-        return "year_totals", {}
-    if t_lower == "biggest yoy increase":
-        return "biggest_yoy_increase", {}
+    m = re.match(r"^trend\s+(.+)$", t, flags=re.IGNORECASE)
+    if m:
+        return {"action": "show_trend", "params": {"show": m.group(1).strip()}}, None
 
-    match = re.match(r"^trend\s+(.+)$", t, flags=re.IGNORECASE)
-    if match:
-        return "trend_show", {"show": match.group(1).strip()}
-
-    return None, {}
-
+    return None, "Supported: top shows | trend <show> | year totals | biggest yoy increase"
 
 
-def get_openai_api_key() -> Optional[str]:
-    """Load OPENAI_API_KEY from local secrets.toml, Streamlit secrets, or environment."""
-    try:
-        secrets_path = Path(__file__).resolve().parent / "secrets.toml"
-        if secrets_path.exists():
-            with secrets_path.open("rb") as f:
-                secrets_data = tomllib.load(f)
-            key = str(secrets_data.get("OPENAI_API_KEY", "")).strip()
-            if key:
-                return key
-    except Exception:
-        pass
-
-    try:
-        key = str(st.secrets.get("OPENAI_API_KEY", "")).strip()
-        if key:
-            return key
-    except Exception:
-        pass
-
-    return os.getenv("OPENAI_API_KEY")
-
-
-def translate_with_openai(user_text: str) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-    api_key = get_openai_api_key()
-    if not api_key:
-        return None, {}, "OPENAI_API_KEY not found in secrets.toml, Streamlit secrets, or environment. AI mode was disabled."
-
-    try:
-        from openai import OpenAI
-    except Exception:
-        return None, {}, "openai package is not installed. AI mode was disabled."
-
-    client = OpenAI(api_key=api_key)
-
-    prompt = (
-        "Translate user request into one allowed action. "
-        "Allowed actions: top_shows, trend_show, year_totals, biggest_yoy_increase. "
-        "Return strict JSON only with schema: "
-        '{"action":"top_shows","params":{"n":10}}. '
-        "For trend_show use params.show. "
-        "If unsure, choose year_totals."
-    )
-
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_text},
-            ],
-        )
-        content = resp.choices[0].message.content or ""
-        parsed = json.loads(content)
-    except Exception as exc:
-        return None, {}, f"AI translation failed: {exc}"
-
-    action = parsed.get("action")
-    params = parsed.get("params", {})
-    allowed = {"top_shows", "trend_show", "year_totals", "biggest_yoy_increase"}
-    if action not in allowed:
-        return None, {}, "AI returned an unsupported action."
-
-    # Sanitize params.
-    safe_params: Dict[str, Any] = {}
+def execute_plan(df_filtered: pd.DataFrame, plan: Dict[str, Any]) -> Dict[str, Any]:
+    action = plan["action"]
+    params = plan.get("params", {})
+    if action == "year_totals":
+        return run_year_totals(df_filtered, params)
     if action == "top_shows":
-        try:
-            safe_params["n"] = max(1, min(50, int(params.get("n", 10))))
-        except Exception:
-            safe_params["n"] = 10
-    elif action == "trend_show":
-        safe_params["show"] = str(params.get("show", "")).strip()
-
-    return action, safe_params, None
-
-
-def run_action(action: str, params: Dict[str, Any], df_filtered: pd.DataFrame, top_n_default: int) -> None:
-    if action == "top_shows":
-        n = int(params.get("n", top_n_default))
-        action_top_shows(df_filtered, n=n)
-    elif action == "trend_show":
-        show_name = params.get("show", "")
-        if not show_name:
-            st.info("Please provide a show name, e.g. `trend CES`.")
-            return
-        action_trend_show(df_filtered, show_name)
-    elif action == "year_totals":
-        action_year_totals(df_filtered)
-    elif action == "biggest_yoy_increase":
-        action_biggest_yoy(df_filtered)
+        return run_top_shows(df_filtered, params)
+    if action == "show_trend":
+        return run_show_trend(df_filtered, params)
+    if action == "yoy_by_show":
+        return run_yoy_by_show(df_filtered, params)
+    if action == "return_after_break":
+        return run_return_after_break(df_filtered, params)
+    if action == "cohort_by_attendance_number":
+        return run_cohort_by_attendance_number(df_filtered, params)
+    raise ValueError("Unsupported action")
 
 
 def main() -> None:
     st.set_page_config(page_title="Trade Show Sales Analyzer", layout="wide")
     st.title("Trade Show Sales Analyzer")
-    st.caption("Upload an Excel file and explore sales by show and year.")
 
     with st.sidebar:
-        st.header("Settings")
-        ai_mode = st.toggle("Enable AI (OpenAI)", value=False)
+        enable_ai = st.toggle("Enable AI", value=False)
 
     uploaded_file = st.file_uploader("Upload Excel file (.xlsx)", type=["xlsx"])
-
     if not uploaded_file:
         st.info("Please upload an .xlsx file to begin.")
         return
@@ -295,164 +177,80 @@ def main() -> None:
     if error:
         st.error(error)
         return
-
     assert df is not None
 
     st.subheader("Cleaned Data Preview")
     st.dataframe(df.head(20), use_container_width=True)
 
-    # Filters
-    st.subheader("Filters")
     all_shows = sorted(df["Show"].unique().tolist())
-    selected_shows = st.multiselect("Show", options=all_shows, default=all_shows)
-
+    selected_shows = st.multiselect("Show", all_shows, default=all_shows)
     min_year, max_year = int(df["Year"].min()), int(df["Year"].max())
     year_range = st.slider("Year range", min_year, max_year, (min_year, max_year))
 
-    filtered = df[
-        df["Show"].isin(selected_shows)
-        & df["Year"].between(year_range[0], year_range[1])
-    ].copy()
-
+    filtered = df[df["Show"].isin(selected_shows) & df["Year"].between(*year_range)].copy()
     if filtered.empty:
         st.warning("No data after applying filters.")
         return
 
-    # KPIs
     total_sales = float(filtered["GrossSales"].sum())
     unique_shows = int(filtered["Show"].nunique())
-
-    year_totals = filtered.groupby("Year")["GrossSales"].sum()
-    best_year = int(year_totals.idxmax()) if not year_totals.empty else None
-
-    show_totals = filtered.groupby("Show")["GrossSales"].sum()
-    best_show = str(show_totals.idxmax()) if not show_totals.empty else None
+    best_year = int(filtered.groupby("Year")["GrossSales"].sum().idxmax())
+    best_show = str(filtered.groupby("Show")["GrossSales"].sum().idxmax())
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Gross Sales", format_currency(total_sales))
-    c2.metric("Number of Shows", f"{unique_shows}")
-    c3.metric("Best Year", str(best_year) if best_year is not None else "N/A")
-    c4.metric("Best Show", best_show if best_show else "N/A")
+    c2.metric("Number of Shows", str(unique_shows))
+    c3.metric("Best Year", str(best_year))
+    c4.metric("Best Show", best_show)
 
-    st.subheader("Charts")
+    st.subheader("Standard Charts")
+    plot_from_result(run_year_totals(filtered, {}))
+    plot_from_result(run_top_shows(filtered, {"n": 10}))
 
-    # Total sales by year
-    by_year = filtered.groupby("Year", as_index=False)["GrossSales"].sum().sort_values("Year")
-    fig1, ax1 = plt.subplots(figsize=(8, 4))
-    years_main = by_year["Year"].dropna().astype(int).sort_values().unique()
-    ax1.bar(by_year["Year"], by_year["GrossSales"])
-    ax1.set_xticks(years_main)
-    formatter1, unit_label1 = get_sales_axis_formatter(by_year["GrossSales"])
-    ax1.yaxis.set_major_formatter(formatter1)
-    ax1.set_title("Total Sales by Year")
-    ax1.set_xlabel("Year")
-    ax1.set_ylabel("Gross Sales" + (f" {unit_label1}" if unit_label1 else ""))
-    plt.xticks(rotation=45)
-    st.pyplot(fig1)
-
-    # Top N shows
-    top_n = st.slider("Top N shows", min_value=3, max_value=25, value=10)
-    by_show = (
-        filtered.groupby("Show", as_index=False)["GrossSales"]
-        .sum()
-        .sort_values("GrossSales", ascending=False)
-        .head(top_n)
-    )
-    fig2, ax2 = plt.subplots(figsize=(8, 4))
-    ax2.bar(by_show["Show"], by_show["GrossSales"])
-    formatter2, unit_label2 = get_sales_axis_formatter(by_show["GrossSales"])
-    ax2.yaxis.set_major_formatter(formatter2)
-    ax2.set_title(f"Top {top_n} Shows by Total Sales")
-    ax2.set_xlabel("Show")
-    ax2.set_ylabel("Gross Sales" + (f" {unit_label2}" if unit_label2 else ""))
-    plt.xticks(rotation=45, ha="right")
-    st.pyplot(fig2)
-
-    # YoY section
-    st.subheader("YoY Change by Show")
-    yoy_mode = st.radio("YoY scope", ["Selected show", "Top 10 shows"], horizontal=True)
-
-    yoy_base = filtered.groupby(["Show", "Year"], as_index=False)["GrossSales"].sum()
-    yoy_base = yoy_base.sort_values(["Show", "Year"])
-    yoy_base["YoYDelta"] = yoy_base.groupby("Show")["GrossSales"].diff()
-
-    if yoy_mode == "Selected show":
-        show_choice = st.selectbox("Choose show", options=all_shows)
-        yoy_table = yoy_base[yoy_base["Show"] == show_choice].copy()
-        st.dataframe(yoy_table, use_container_width=True)
-
-        if st.checkbox("Show line chart for selected show", value=True):
-            trend = (
-                filtered[filtered["Show"] == show_choice]
-                .groupby("Year", as_index=False)["GrossSales"]
-                .sum()
-                .sort_values("Year")
-            )
-            fig3, ax3 = plt.subplots(figsize=(8, 4))
-            ax3.plot(trend["Year"], trend["GrossSales"], marker="o")
-            formatter3, unit_label3 = get_sales_axis_formatter(trend["GrossSales"])
-            ax3.yaxis.set_major_formatter(formatter3)
-            ax3.set_title(f"Trend for {show_choice}")
-            ax3.set_xlabel("Year")
-            years_selected = trend["Year"].dropna().astype(int).sort_values().unique()
-            ax3.set_xticks(years_selected)
-            ax3.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax3.set_ylabel("Gross Sales" + (f" {unit_label3}" if unit_label3 else ""))
-            ax3.grid(alpha=0.3)
-            st.pyplot(fig3)
-    else:
-        top10_shows = (
-            filtered.groupby("Show")["GrossSales"]
-            .sum()
-            .sort_values(ascending=False)
-            .head(10)
-            .index.tolist()
-        )
-        yoy_table = yoy_base[yoy_base["Show"].isin(top10_shows)].copy()
-        st.dataframe(yoy_table, use_container_width=True)
-
-    # Ask box
-    st.subheader("Ask (prototype)")
     ask_text = st.text_input(
-        "Ask a question",
-        placeholder="Try: top shows | trend CES | year totals | biggest yoy increase",
+        "Ask (manual commands or AI plan)",
+        placeholder="Examples: top shows | trend CES | yoy percent by show in 2021-2024",
     )
 
+    plan_used = None
     if ask_text:
-        action = None
-        params: Dict[str, Any] = {}
-
-        if ai_mode:
-            action, params, ai_error = translate_with_openai(ask_text)
+        if enable_ai:
+            plan, ai_error = get_query_plan_with_ai(ask_text, all_shows)
             if ai_error:
-                st.warning(ai_error)
-                ai_mode = False
-
-        if not action:
-            action, params = parse_manual_command(ask_text)
-
-        if action:
-            run_action(action, params, filtered, top_n_default=top_n)
+                st.warning(f"AI issue: {ai_error}. Falling back to manual parser.")
+                plan, parser_err = parse_manual_command(ask_text)
+                if parser_err:
+                    st.info(parser_err)
+            plan_used = plan
         else:
-            st.info(
-                "Supported commands: `top shows`, `trend <show name>`, "
-                "`year totals`, `biggest yoy increase`."
-            )
+            plan, parser_err = parse_manual_command(ask_text)
+            if parser_err:
+                st.info(parser_err)
+            plan_used = plan
 
-    # Debug / trust panels
-    with st.expander("How this was calculated"):
+        if plan_used:
+            result = execute_plan(filtered, plan_used)
+            st.subheader(result["title"])
+            st.dataframe(result["table"], use_container_width=True)
+            plot_from_result(result)
+
+    with st.expander("Plan used"):
+        st.code(json.dumps(plan_used or {}, indent=2), language="json")
+
+    with st.expander("How calculated"):
         st.write(f"Filtered row count: {len(filtered)}")
-        st.write("Cleaning steps applied:")
+        st.write(f"Show filter count: {len(selected_shows)}")
+        st.write(f"Year range: {year_range[0]} - {year_range[1]}")
         for step in quality["cleaning_steps"]:
             st.markdown(f"- {step}")
 
     with st.expander("Data quality"):
         st.write(f"Rows original: {quality['rows_original']}")
         st.write(f"Rows dropped: {quality['rows_dropped']}")
-        st.write(f"Dropped for blank Show: {quality['dropped_blank_show']}")
-        st.write(f"Dropped for missing/invalid GrossSales: {quality['dropped_missing_gross']}")
-        st.write(f"Dropped for invalid Year: {quality['dropped_invalid_year']}")
-        st.write(f"Non-numeric GrossSales rows corrected: {quality['grosssales_corrected']}")
+        st.write(f"Dropped blank Show: {quality['dropped_blank_show']}")
+        st.write(f"Dropped invalid/missing GrossSales: {quality['dropped_missing_gross']}")
+        st.write(f"Dropped invalid Year: {quality['dropped_invalid_year']}")
+        st.write(f"Corrected GrossSales rows: {quality['grosssales_corrected']}")
         st.write(f"Duplicate rows count: {quality['duplicate_rows']}")
 
 

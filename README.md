@@ -1,15 +1,14 @@
 # Trade Show Sales Analyzer (Streamlit Prototype)
 
-A simple Streamlit app to analyze trade show sales from an Excel file.
+Analyze trade show sales from an Excel file (`Show`, `Year`, `GrossSales`) with filters, KPIs, charts, and a safe AI query-plan router.
 
 ## Expected Excel format
-Upload an `.xlsx` file with these required columns (first sheet is used by default):
-
+First sheet is loaded by default and must include:
 - `Show`
 - `Year`
 - `GrossSales`
 
-### Example
+Example:
 
 | Show | Year | GrossSales |
 |---|---:|---:|
@@ -17,64 +16,65 @@ Upload an `.xlsx` file with these required columns (first sheet is used by defau
 | CES | 2023 | $145,500 |
 | NRF | 2023 | 98000 |
 
-`GrossSales` can include `$` and `,` symbols; the app cleans and converts these values.
-
-## Features
-
-- Upload and validate `.xlsx` input
-- Cleans and coerces data types:
-  - `Year` -> integer
-  - `GrossSales` -> float
-- Drops rows with blank `Show` or missing `GrossSales` (and invalid `Year`)
-- Global filters for `Show` and year range
-- KPI cards:
-  - Total Gross Sales
-  - Number of unique shows
-  - Best Year
-  - Best Show
-- Charts:
-  - Total sales by year
-  - Top N shows by sales
-  - YoY change by show
-- Ask box (command-based, no API key required):
-  - `top shows`
-  - `trend <show name>`
-  - `year totals`
-  - `biggest yoy increase`
-- Optional AI mode (OpenAI) to map natural language to supported commands only
-- Trust/debug panels for calculations and data quality
-
 ## Run locally
-
 ```bash
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows PowerShell: .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Optional: Enable AI mode (OpenAI)
+## API key setup (optional AI mode)
+The app reads `OPENAI_API_KEY` from:
+1. `st.secrets["OPENAI_API_KEY"]` (recommended for Streamlit)
+2. `os.environ.get("OPENAI_API_KEY")`
 
-Set your API key before starting the app (either option works):
-
-**Option A: `secrets.toml` next to `app.py`**
-
+### Use `.streamlit/secrets.toml` (local)
+Create:
 ```toml
+# .streamlit/secrets.toml
 OPENAI_API_KEY = "your_api_key_here"
 ```
 
-**Option B: environment variable**
+`/.streamlit/secrets.toml` and `.env` are gitignored so local keys won't be committed.
 
+### Use environment variable
+macOS/Linux:
 ```bash
 export OPENAI_API_KEY="your_api_key_here"
 ```
 
-Then enable **"Enable AI (OpenAI)"** in the sidebar.
+Windows PowerShell:
+```powershell
+setx OPENAI_API_KEY "your_api_key_here"
+```
 
-The AI mode is constrained to return one of these actions only:
-- `top_shows`
-- `trend_show`
+## Safe AI query plan design
+When **Enable AI** is on:
+- Model: `gpt-5-mini`
+- The model returns **JSON plan only** (no code)
+- App validates action + params against allowlist and bounds
+- App runs trusted local pandas/matplotlib functions
+- No `exec`/`eval` is used on model output
+
+If AI output is invalid, app retries once, then falls back to manual parser.
+
+## Supported actions and example questions
 - `year_totals`
-- `biggest_yoy_increase`
+  - “show year totals”
+- `top_shows`
+  - “top 15 shows between 2021 and 2024”
+- `show_trend`
+  - “trend for CES”
+- `yoy_by_show`
+  - “yoy percent by show from 2020 to 2024”
+- `return_after_break`
+  - “which shows had the biggest return after a 2-year break?”
+- `cohort_by_attendance_number`
+  - “cohort by attendance number up to 6, normalized”
 
-No arbitrary code execution is performed.
+## Manual parser commands (AI off)
+- `top shows`
+- `trend <show name>`
+- `year totals`
+- `biggest yoy increase`
