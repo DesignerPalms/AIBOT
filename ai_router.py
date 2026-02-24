@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, Optional
 
@@ -17,58 +16,24 @@ def get_openai_api_key() -> Optional[str]:
     return os.environ.get("OPENAI_API_KEY")
 
 
-def _extract_message_text(choice_message: Any) -> str:
-    if choice_message is None:
-        return ""
+def _extract_response_text(resp: Any) -> str:
+    text = getattr(resp, "output_text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
 
-    content = getattr(choice_message, "content", "")
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content") or ""
-                if t:
-                    parts.append(str(t))
-            else:
-                t = getattr(item, "text", "") or getattr(item, "content", "")
-                if t:
-                    parts.append(str(t))
-        return "\n".join(parts).strip()
-
-    return str(content or "")
+    output = getattr(resp, "output", None) or []
+    parts = []
+    for item in output:
+        content = getattr(item, "content", None) or []
+        for c in content:
+            ctext = getattr(c, "text", None)
+            if ctext:
+                parts.append(str(ctext))
+    return "\n".join(parts).strip()
 
 
-def _chat_completion_request(client: Any, system_prompt: str, user_payload: Dict[str, Any], max_output_tokens: int) -> Any:
-    return client.chat.completions.create(
-        model="gpt-5-mini",
-        max_completion_tokens=max_output_tokens,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload)},
-        ],
-    )
-
-
-def _parse_hint(answer_text: str) -> Dict[str, str]:
-    hint = "none"
-    show = ""
-    for line in answer_text.splitlines():
-        if line.strip().upper().startswith("CHART_HINT:"):
-            raw = line.split(":", 1)[1].strip().lower()
-            if raw.startswith("show_trend:"):
-                hint = "show_trend"
-                show = raw.split(":", 1)[1].strip()
-            else:
-                hint = raw
-            break
-    return {"hint": hint, "show": show}
-
-
-def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 500) -> Dict[str, Any]:
-    """Plain-text AI analysis with robust retries and chart hint extraction."""
+def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_output_tokens: int = 500) -> Dict[str, Any]:
+    """Send Excel file + user question directly to model, return plain text answer only."""
     api_key = get_openai_api_key()
     if not api_key:
         return {"ok": False, "error": "OPENAI_API_KEY not found in Streamlit secrets or environment."}
@@ -80,49 +45,40 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
 
     client = OpenAI(api_key=api_key)
 
-    system_prompt = (
-        "You are a trade show sales analyst. Use ONLY the provided CSV data. "
-        "Return plain text only with this format:\n"
-        "ANSWER: <2-5 sentence answer>\n"
-        "INSIGHTS:\n- <bullet>\n- <bullet>\n- <bullet>\n"
-        "CHART_HINT: <one of: first5_cohort, year_totals, top_shows, return_after_break, show_trend:<show_name>, none>\n"
-        "Never return JSON or code."
-    )
+    try:
+        upload = client.files.create(file=(filename, excel_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), purpose="assistants")
 
-    attempts = [csv_data, csv_data[:120_000], csv_data[:70_000]]
-    last_usage = {}
-    for payload_csv in attempts:
-        try:
-            resp = _chat_completion_request(
-                client,
-                system_prompt,
-                {"question": question, "csv": payload_csv},
-                max_output_tokens,
-            )
-            message = resp.choices[0].message if resp.choices else None
-            answer_text = _extract_message_text(message).strip()
-
-            usage = getattr(resp, "usage", None)
-            last_usage = {
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            }
-
-            if answer_text:
-                parsed_hint = _parse_hint(answer_text)
-                return {
-                    "ok": True,
-                    "answer": answer_text,
-                    "usage": last_usage,
-                    "chart_hint": parsed_hint["hint"],
-                    "hint_show": parsed_hint["show"],
+        resp = client.responses.create(
+            model="gpt-5-mini",
+            max_output_tokens=max_output_tokens,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Analyze the attached Excel file and answer the user's question. "
+                                "Use only data in the file. Return concise plain text only.\n\n"
+                                f"Question: {question}"
+                            ),
+                        },
+                        {"type": "input_file", "file_id": upload.id},
+                    ],
                 }
-        except Exception:
-            continue
+            ],
+        )
 
-    return {
-        "ok": False,
-        "error": "The model returned an empty response after retries. Try a narrower year range or fewer shows.",
-        "usage": last_usage,
-    }
+        answer_text = _extract_response_text(resp)
+        if not answer_text:
+            answer_text = "The model returned an empty response. Please try again with a clearer question."
+
+        usage = getattr(resp, "usage", None)
+        usage_data = {
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+        return {"ok": True, "answer": answer_text, "usage": usage_data}
+    except Exception as exc:
+        return {"ok": False, "error": f"Full AI analysis failed: {exc}"}
