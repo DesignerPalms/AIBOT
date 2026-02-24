@@ -6,7 +6,7 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 import pandas as pd
 import streamlit as st
 
-from actions import run_show_trend, run_top_shows, run_year_totals
+from actions import run_return_after_break, run_show_trend, run_top_shows, run_year_totals
 from ai_router import get_full_ai_analysis, get_openai_api_key
 
 CSV_CHAR_LIMIT = 200_000
@@ -171,6 +171,15 @@ def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
         )
 
 
+
+def maybe_render_local_fallback(question: str, filtered: pd.DataFrame) -> None:
+    q = question.lower()
+    if "break" in q or "return" in q:
+        st.markdown("### Supplemental local analysis (break/return)")
+        fallback = run_return_after_break(filtered, {"min_gap_years": 2, "pre_window": 2, "post_window": 0})
+        st.dataframe(fallback["table"], use_container_width=True)
+        plot_from_result(fallback)
+
 def main() -> None:
     st.set_page_config(page_title="Trade Show Sales Analyzer", layout="wide")
     st.title("Trade Show Sales Analyzer")
@@ -253,6 +262,8 @@ def main() -> None:
 
                 ai_result = get_full_ai_analysis(ask_text, csv_data, max_output_tokens=900)
                 render_ai_analysis_result(ai_result, st)
+                if ai_result.get("degraded"):
+                    maybe_render_local_fallback(ask_text, filtered)
 
     with st.expander("How calculated"):
         st.write(f"Filtered row count: {len(filtered)}")

@@ -319,12 +319,27 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
             last_usage_data = usage_data
 
             parsed = _parse_json_flex(content)
-            return {"ok": True, "data": parsed, "raw": content, "usage": usage_data}
+            return {"ok": True, "data": parsed, "raw": content, "usage": usage_data, "degraded": False}
         except Exception as exc:
             last_err = str(exc)
 
+    # Final rescue: request plain-text answer if JSON extraction repeatedly fails.
+    rescue_text = ""
+    try:
+        rescue_payload = {
+            "question": question,
+            "csv": csv_data,
+            "rules": "Use only CSV. Return concise plain text with a short answer and 3 bullet insights.",
+        }
+        rescue_resp = _chat_completion_request(client, system_prompt, rescue_payload, 500, structured=False)
+        rescue_message = rescue_resp.choices[0].message if rescue_resp.choices else None
+        rescue_text = _extract_message_text(rescue_message)
+    except Exception:
+        rescue_text = ""
+
     fallback_answer = (
-        (last_raw or "").strip()
+        rescue_text.strip()
+        or (last_raw or "").strip()
         or f"I could not parse a structured JSON response from the model. Raw parser error: {last_err}"
     )
     return {
@@ -333,11 +348,12 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
             "answer": fallback_answer,
             "insights": [
                 "Structured JSON parsing failed; showing best available model text.",
-                "Try a more specific question or a smaller filtered dataset for better chart/table output.",
+                "The app can still show relevant local fallback analysis for some question types.",
             ],
             "tables": [],
             "chart": {"type": "none", "title": "", "x": "", "y": "", "series": None, "data": ""},
         },
         "raw": last_raw,
         "usage": last_usage_data,
+        "degraded": True,
     }

@@ -59,4 +59,4 @@ setx OPENAI_API_KEY "your_api_key_here"
   - relevant chart(s) when available
 - If filtered rows exceed 900, the app asks for confirmation before sending.
 - CSV payload is capped at 200,000 characters to control token usage.
-- If structured JSON parsing fails, the app still shows the best available AI text response.
+- If structured JSON parsing fails, the app now retries and falls back to a plain-text AI answer; for break/return questions it also shows a supplemental local break-analysis table/chart.
