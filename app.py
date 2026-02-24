@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 import pandas as pd
 import streamlit as st
 
@@ -92,16 +92,16 @@ def format_currency(value: float) -> str:
 
 
 def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
-    """Return a readable y-axis formatter and unit suffix based on data magnitude."""
+    """Use raw dollars for smaller values; scale only when labels get too large."""
     max_abs = float(values.abs().max()) if len(values) else 0.0
 
     if max_abs >= 1_000_000:
         return FuncFormatter(lambda y, _: f"{y / 1_000_000:,.1f}"), "(Millions)"
     if max_abs >= 100_000:
         return FuncFormatter(lambda y, _: f"{y / 100_000:,.1f}"), "(100,000s)"
-    if max_abs >= 1_000:
-        return FuncFormatter(lambda y, _: f"{y / 1_000:,.1f}"), "(Thousands)"
-    return FuncFormatter(lambda y, _: f"{y:,.0f}"), "(Dollars)"
+
+    # Keep raw values when they are small enough to stay readable.
+    return FuncFormatter(lambda y, _: f"{y:,.0f}"), ""
 
 
 def action_top_shows(df: pd.DataFrame, n: int = 10) -> None:
@@ -130,7 +130,8 @@ def action_trend_show(df: pd.DataFrame, show_name: str) -> None:
     ax.yaxis.set_major_formatter(formatter)
     ax.set_title(f"Sales Trend: {show_name}")
     ax.set_xlabel("Year")
-    ax.set_ylabel(f"Gross Sales {unit_label}")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_ylabel("Gross Sales" + (f" {unit_label}" if unit_label else ""))
     ax.grid(alpha=0.3)
     st.pyplot(fig)
 
@@ -145,7 +146,7 @@ def action_year_totals(df: pd.DataFrame) -> None:
     ax.yaxis.set_major_formatter(formatter)
     ax.set_title("Total Sales by Year")
     ax.set_xlabel("Year")
-    ax.set_ylabel(f"Gross Sales {unit_label}")
+    ax.set_ylabel("Gross Sales" + (f" {unit_label}" if unit_label else ""))
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
@@ -340,7 +341,7 @@ def main() -> None:
     ax1.yaxis.set_major_formatter(formatter1)
     ax1.set_title("Total Sales by Year")
     ax1.set_xlabel("Year")
-    ax1.set_ylabel(f"Gross Sales {unit_label1}")
+    ax1.set_ylabel("Gross Sales" + (f" {unit_label1}" if unit_label1 else ""))
     plt.xticks(rotation=45)
     st.pyplot(fig1)
 
@@ -358,7 +359,7 @@ def main() -> None:
     ax2.yaxis.set_major_formatter(formatter2)
     ax2.set_title(f"Top {top_n} Shows by Total Sales")
     ax2.set_xlabel("Show")
-    ax2.set_ylabel(f"Gross Sales {unit_label2}")
+    ax2.set_ylabel("Gross Sales" + (f" {unit_label2}" if unit_label2 else ""))
     plt.xticks(rotation=45, ha="right")
     st.pyplot(fig2)
 
@@ -388,7 +389,8 @@ def main() -> None:
             ax3.yaxis.set_major_formatter(formatter3)
             ax3.set_title(f"Trend for {show_choice}")
             ax3.set_xlabel("Year")
-            ax3.set_ylabel(f"Gross Sales {unit_label3}")
+            ax3.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax3.set_ylabel("Gross Sales" + (f" {unit_label3}" if unit_label3 else ""))
             ax3.grid(alpha=0.3)
             st.pyplot(fig3)
     else:
