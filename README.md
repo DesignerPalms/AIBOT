@@ -54,7 +54,7 @@ setx OPENAI_API_KEY "your_api_key_here"
 - Warning: this sends your **filtered** `Show, Year, GrossSales` rows to the model.
 - Ask a question in the main input box and the app will return:
   - a short AI text answer
-  - supporting local data table(s) and chart(s) when the question maps to known analysis patterns (e.g., break/return, trend, top shows, year totals)
+  - dynamic supporting local table/chart chosen by AI chart hint when possible (first5 pattern, year totals, top shows, return after break, show trend), with heuristic fallback if hint is missing
 - If filtered rows exceed 900, the app asks for confirmation before sending.
 - CSV payload is capped at 200,000 characters to control token usage.
-- AI mode uses plain-text responses (no JSON contract required), then adds trusted local supporting analysis where applicable.
+- AI mode uses plain-text responses (no JSON contract required), retries with progressively smaller payloads if response is empty, and adds trusted local supporting analysis.

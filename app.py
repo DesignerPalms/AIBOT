@@ -6,7 +6,7 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 import pandas as pd
 import streamlit as st
 
-from actions import run_return_after_break, run_show_trend, run_top_shows, run_year_totals
+from actions import run_first_five_year_pattern, run_return_after_break, run_show_trend, run_top_shows, run_year_totals
 from ai_router import get_full_ai_analysis, get_openai_api_key
 
 CSV_CHAR_LIMIT = 200_000
@@ -138,25 +138,58 @@ def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
         )
 
 
-def maybe_render_local_fallback(question: str, filtered: pd.DataFrame) -> None:
+def maybe_render_local_fallback(question: str, filtered: pd.DataFrame, chart_hint: str = "none", hint_show: str = "") -> None:
     q = question.lower()
 
-    # Heuristic local support for the AI answer (trusted pandas analytics).
+    # AI-directed hints take priority.
+    if chart_hint == "first5_cohort":
+        st.markdown("### Supporting local data (first 5 years pattern)")
+        result = run_first_five_year_pattern(filtered, {"n_years": 5})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+    if chart_hint == "year_totals":
+        st.markdown("### Supporting local data (year totals)")
+        result = run_year_totals(filtered, {})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+    if chart_hint == "top_shows":
+        st.markdown("### Supporting local data (top shows)")
+        result = run_top_shows(filtered, {"n": 10})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+    if chart_hint == "return_after_break":
+        st.markdown("### Supporting local data (break/return)")
+        result = run_return_after_break(filtered, {"min_gap_years": 2, "pre_window": 2, "post_window": 0})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+    if chart_hint == "show_trend" and hint_show:
+        show_map = {s.lower(): s for s in filtered["Show"].unique().tolist()}
+        resolved = show_map.get(hint_show.lower())
+        if resolved:
+            st.markdown(f"### Supporting local data (trend for {resolved})")
+            result = run_show_trend(filtered, {"show": resolved})
+            st.dataframe(result["table"], use_container_width=True)
+            plot_from_result(result)
+            return
+
+    # Heuristic fallback if AI hint missing.
+    if "first 5" in q or "first five" in q or "first-year" in q or "first year" in q:
+        st.markdown("### Supporting local data (first 5 years pattern)")
+        result = run_first_five_year_pattern(filtered, {"n_years": 5})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+
     if "break" in q or "return" in q:
         st.markdown("### Supporting local data (break/return)")
         result = run_return_after_break(filtered, {"min_gap_years": 2, "pre_window": 2, "post_window": 0})
         st.dataframe(result["table"], use_container_width=True)
         plot_from_result(result)
         return
-
-    if "trend" in q:
-        for show in sorted(filtered["Show"].unique().tolist()):
-            if show.lower() in q:
-                st.markdown(f"### Supporting local data (trend for {show})")
-                result = run_show_trend(filtered, {"show": show})
-                st.dataframe(result["table"], use_container_width=True)
-                plot_from_result(result)
-                return
 
     if "top" in q:
         st.markdown("### Supporting local data (top shows)")
@@ -171,7 +204,6 @@ def maybe_render_local_fallback(question: str, filtered: pd.DataFrame) -> None:
         st.dataframe(result["table"], use_container_width=True)
         plot_from_result(result)
         return
-
 
 def main() -> None:
     st.set_page_config(page_title="Trade Show Sales Analyzer", layout="wide")
@@ -255,7 +287,12 @@ def main() -> None:
 
                 ai_result = get_full_ai_analysis(ask_text, csv_data, max_output_tokens=500)
                 render_ai_analysis_result(ai_result, st)
-                maybe_render_local_fallback(ask_text, filtered)
+                maybe_render_local_fallback(
+                    ask_text,
+                    filtered,
+                    chart_hint=str(ai_result.get("chart_hint", "none")),
+                    hint_show=str(ai_result.get("hint_show", "")),
+                )
 
     with st.expander("How calculated"):
         st.write(f"Filtered row count: {len(filtered)}")

@@ -2,79 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import streamlit as st
-
-ALLOWED_ACTIONS = {
-    "year_totals",
-    "top_shows",
-    "show_trend",
-    "yoy_by_show",
-    "return_after_break",
-    "cohort_by_attendance_number",
-}
-
-PLAN_SCHEMA: Dict[str, Any] = {
-    "name": "query_plan",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "action": {"type": "string", "enum": sorted(ALLOWED_ACTIONS)},
-            "params": {"type": "object"},
-        },
-        "required": ["action", "params"],
-    },
-}
-
-FULL_ANALYSIS_SCHEMA: Dict[str, Any] = {
-    "name": "full_analysis",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "answer": {"type": "string"},
-            "insights": {"type": "array", "items": {"type": "string"}},
-            "tables": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "name": {"type": "string"},
-                        "columns": {"type": "array", "items": {"type": "string"}},
-                        "rows": {
-                            "type": "array",
-                            "items": {
-                                "type": "array",
-                                "items": {"type": ["string", "number", "boolean", "null"]},
-                            },
-                        },
-                    },
-                    "required": ["name", "columns", "rows"],
-                },
-            },
-            "chart": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "type": {"type": "string", "enum": ["bar", "line", "none"]},
-                    "title": {"type": "string"},
-                    "x": {"type": "string"},
-                    "y": {"type": "string"},
-                    "series": {"type": ["string", "null"]},
-                    "data": {"type": "string"},
-                },
-                "required": ["type", "title", "x", "y", "series", "data"],
-            },
-        },
-        "required": ["answer", "insights", "tables", "chart"],
-    },
-}
 
 
 def get_openai_api_key() -> Optional[str]:
@@ -87,152 +17,7 @@ def get_openai_api_key() -> Optional[str]:
     return os.environ.get("OPENAI_API_KEY")
 
 
-def _validate_int(value: Any, low: int, high: int, name: str) -> int:
-    if not isinstance(value, int):
-        raise ValueError(f"{name} must be an integer")
-    if value < low or value > high:
-        raise ValueError(f"{name} must be between {low} and {high}")
-    return value
-
-
-def validate_plan(plan: Dict[str, Any], show_names: List[str]) -> Dict[str, Any]:
-    if not isinstance(plan, dict):
-        raise ValueError("Plan must be a JSON object")
-
-    action = plan.get("action")
-    params = plan.get("params", {})
-    if action not in ALLOWED_ACTIONS:
-        raise ValueError("Unsupported action in plan")
-    if not isinstance(params, dict):
-        raise ValueError("params must be an object")
-
-    validated: Dict[str, Any] = {"action": action, "params": {}}
-
-    if action == "year_totals":
-        if params:
-            raise ValueError("year_totals does not accept params")
-
-    elif action == "top_shows":
-        n = params.get("n", 10)
-        validated["params"]["n"] = _validate_int(n, 1, 50, "n")
-        for bound in ["year_min", "year_max"]:
-            if bound in params and params[bound] is not None:
-                validated["params"][bound] = int(params[bound])
-
-    elif action == "show_trend":
-        show = str(params.get("show", "")).strip()
-        if not show:
-            raise ValueError("show is required for show_trend")
-        show_map = {s.lower(): s for s in show_names}
-        if show.lower() not in show_map:
-            raise ValueError("show must match a Show value in data")
-        validated["params"]["show"] = show_map[show.lower()]
-
-    elif action == "yoy_by_show":
-        mode = params.get("mode", "absolute")
-        if mode not in {"percent", "absolute"}:
-            raise ValueError("mode must be 'percent' or 'absolute'")
-        validated["params"]["mode"] = mode
-        for bound in ["year_min", "year_max"]:
-            if bound in params and params[bound] is not None:
-                validated["params"][bound] = int(params[bound])
-
-    elif action == "return_after_break":
-        validated["params"]["min_gap_years"] = _validate_int(params.get("min_gap_years", 2), 1, 10, "min_gap_years")
-        validated["params"]["pre_window"] = _validate_int(params.get("pre_window", 2), 1, 5, "pre_window")
-        validated["params"]["post_window"] = _validate_int(params.get("post_window", 0), 0, 5, "post_window")
-
-    elif action == "cohort_by_attendance_number":
-        validated["params"]["max_attendance_n"] = _validate_int(
-            params.get("max_attendance_n", 6), 2, 10, "max_attendance_n"
-        )
-        normalize = params.get("normalize", False)
-        if not isinstance(normalize, bool):
-            raise ValueError("normalize must be a boolean")
-        validated["params"]["normalize"] = normalize
-
-    return validated
-
-
-def _build_system_prompt() -> str:
-    return (
-        "You are a routing assistant. Return only JSON query plans. "
-        "Never include code. Choose one action and params only."
-    )
-
-
-def get_query_plan_with_ai(user_text: str, show_names: List[str]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    api_key = get_openai_api_key()
-    if not api_key:
-        return None, "OPENAI_API_KEY not found in Streamlit secrets or environment."
-
-    try:
-        from openai import OpenAI
-    except Exception:
-        return None, "openai package is not installed."
-
-    client = OpenAI(api_key=api_key)
-
-    input_prompt = {
-        "question": user_text,
-        "allowed_actions": sorted(ALLOWED_ACTIONS),
-        "notes": "show_trend.show must be a show name from dataset",
-    }
-
-    last_error = None
-    for _ in range(2):
-        try:
-            resp = client.chat.completions.create(
-                model="gpt-5-mini",
-                response_format={"type": "json_schema", "json_schema": PLAN_SCHEMA},
-                messages=[
-                    {"role": "system", "content": _build_system_prompt()},
-                    {"role": "user", "content": json.dumps(input_prompt)},
-                ],
-            )
-            content = resp.choices[0].message.content or "{}"
-            plan = json.loads(content)
-            validated = validate_plan(plan, show_names)
-            return validated, None
-        except Exception as exc:
-            last_error = str(exc)
-
-    return None, f"AI plan was invalid after retry: {last_error}"
-
-
-
-
-def _parse_json_flex(raw_text: str) -> Dict[str, Any]:
-    """Parse JSON robustly even if model wraps it in markdown/code fences."""
-    text = (raw_text or "").strip()
-    if not text:
-        raise ValueError("Empty response")
-
-    # Direct parse first.
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # Strip fenced code blocks like ```json ... ```
-    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-    if fence_match:
-        candidate = fence_match.group(1).strip()
-        return json.loads(candidate)
-
-    # Fallback: find largest JSON object slice.
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start : end + 1]
-        return json.loads(candidate)
-
-    raise ValueError("No JSON object found in response")
-
-
-
 def _extract_message_text(choice_message: Any) -> str:
-    """Extract text from OpenAI message payloads across SDK variants."""
     if choice_message is None:
         return ""
 
@@ -256,22 +41,34 @@ def _extract_message_text(choice_message: Any) -> str:
     return str(content or "")
 
 
-def _chat_completion_request(client: Any, system_prompt: str, user_payload: Dict[str, Any], max_output_tokens: int, structured: bool) -> Any:
-    kwargs: Dict[str, Any] = {
-        "model": "gpt-5-mini",
-        "max_completion_tokens": max_output_tokens,
-        "messages": [
+def _chat_completion_request(client: Any, system_prompt: str, user_payload: Dict[str, Any], max_output_tokens: int) -> Any:
+    return client.chat.completions.create(
+        model="gpt-5-mini",
+        max_completion_tokens=max_output_tokens,
+        messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(user_payload)},
         ],
-    }
-    if structured:
-        kwargs["response_format"] = {"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA}
+    )
 
-    return client.chat.completions.create(**kwargs)
+
+def _parse_hint(answer_text: str) -> Dict[str, str]:
+    hint = "none"
+    show = ""
+    for line in answer_text.splitlines():
+        if line.strip().upper().startswith("CHART_HINT:"):
+            raw = line.split(":", 1)[1].strip().lower()
+            if raw.startswith("show_trend:"):
+                hint = "show_trend"
+                show = raw.split(":", 1)[1].strip()
+            else:
+                hint = raw
+            break
+    return {"hint": hint, "show": show}
+
 
 def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 500) -> Dict[str, Any]:
-    """Plain-text AI analysis mode: no JSON contract/parsing required."""
+    """Plain-text AI analysis with robust retries and chart hint extraction."""
     api_key = get_openai_api_key()
     if not api_key:
         return {"ok": False, "error": "OPENAI_API_KEY not found in Streamlit secrets or environment."}
@@ -284,30 +81,48 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
     client = OpenAI(api_key=api_key)
 
     system_prompt = (
-        "You are a sales analyst. Use only the provided CSV data. "
-        "Return a short, direct answer in plain text (2-5 sentences). "
-        "Do not return JSON or code."
+        "You are a trade show sales analyst. Use ONLY the provided CSV data. "
+        "Return plain text only with this format:\n"
+        "ANSWER: <2-5 sentence answer>\n"
+        "INSIGHTS:\n- <bullet>\n- <bullet>\n- <bullet>\n"
+        "CHART_HINT: <one of: first5_cohort, year_totals, top_shows, return_after_break, show_trend:<show_name>, none>\n"
+        "Never return JSON or code."
     )
-    user_payload = {
-        "question": question,
-        "csv": csv_data,
+
+    attempts = [csv_data, csv_data[:120_000], csv_data[:70_000]]
+    last_usage = {}
+    for payload_csv in attempts:
+        try:
+            resp = _chat_completion_request(
+                client,
+                system_prompt,
+                {"question": question, "csv": payload_csv},
+                max_output_tokens,
+            )
+            message = resp.choices[0].message if resp.choices else None
+            answer_text = _extract_message_text(message).strip()
+
+            usage = getattr(resp, "usage", None)
+            last_usage = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+
+            if answer_text:
+                parsed_hint = _parse_hint(answer_text)
+                return {
+                    "ok": True,
+                    "answer": answer_text,
+                    "usage": last_usage,
+                    "chart_hint": parsed_hint["hint"],
+                    "hint_show": parsed_hint["show"],
+                }
+        except Exception:
+            continue
+
+    return {
+        "ok": False,
+        "error": "The model returned an empty response after retries. Try a narrower year range or fewer shows.",
+        "usage": last_usage,
     }
-
-    try:
-        resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=False)
-        message = resp.choices[0].message if resp.choices else None
-        answer_text = _extract_message_text(message).strip()
-
-        usage = getattr(resp, "usage", None)
-        usage_data = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "total_tokens": getattr(usage, "total_tokens", None),
-        }
-
-        if not answer_text:
-            answer_text = "The model returned an empty text response. Try reducing filters or asking a narrower question."
-
-        return {"ok": True, "answer": answer_text, "usage": usage_data}
-    except Exception as exc:
-        return {"ok": False, "error": f"Full AI analysis failed: {exc}"}

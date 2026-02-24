@@ -172,3 +172,35 @@ def run_cohort_by_attendance_number(df: pd.DataFrame, params: Dict[str, Any]) ->
             "title": "Cohort Curve by Attendance Number",
         },
     }
+
+
+
+def run_first_five_year_pattern(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Analyze pattern across first N attendance years per show (default 5)."""
+    n_years = int(params.get("n_years", 5))
+    by_show_year = (
+        df.groupby(["Show", "Year"], as_index=False)["GrossSales"]
+        .sum()
+        .sort_values(["Show", "Year"])
+    )
+    by_show_year["attendance_year_index"] = by_show_year.groupby("Show").cumcount() + 1
+    first_n = by_show_year[by_show_year["attendance_year_index"] <= n_years].copy()
+
+    summary = (
+        first_n.groupby("attendance_year_index")["GrossSales"]
+        .agg(["mean", "median", "count"])
+        .reset_index()
+        .rename(columns={"mean": "AvgSales", "median": "MedianSales", "count": "ShowCount"})
+        .sort_values("attendance_year_index")
+    )
+
+    return {
+        "title": f"Pattern in First {n_years} Years of a Show",
+        "table": summary,
+        "chart": {
+            "kind": "line",
+            "x": "attendance_year_index",
+            "y": "AvgSales",
+            "title": f"Average Sales by Attendance Year (1-{n_years})",
+        },
+    }
