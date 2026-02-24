@@ -229,6 +229,47 @@ def _parse_json_flex(raw_text: str) -> Dict[str, Any]:
 
     raise ValueError("No JSON object found in response")
 
+
+
+def _extract_message_text(choice_message: Any) -> str:
+    """Extract text from OpenAI message payloads across SDK variants."""
+    if choice_message is None:
+        return ""
+
+    content = getattr(choice_message, "content", "")
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                t = item.get("text") or item.get("content") or ""
+                if t:
+                    parts.append(str(t))
+            else:
+                t = getattr(item, "text", "") or getattr(item, "content", "")
+                if t:
+                    parts.append(str(t))
+        return "\n".join(parts).strip()
+
+    return str(content or "")
+
+
+def _chat_completion_request(client: Any, system_prompt: str, user_payload: Dict[str, Any], max_output_tokens: int, structured: bool) -> Any:
+    kwargs: Dict[str, Any] = {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": max_output_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload)},
+        ],
+    }
+    if structured:
+        kwargs["response_format"] = {"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA}
+
+    return client.chat.completions.create(**kwargs)
+
 def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 900) -> Dict[str, Any]:
     api_key = get_openai_api_key()
     if not api_key:
@@ -257,16 +298,17 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
 
     for _ in range(2):
         try:
-            resp = client.chat.completions.create(
-                model="gpt-5-mini",
-                max_completion_tokens=max_output_tokens,
-                response_format={"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA},
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(user_payload)},
-                ],
-            )
-            content = resp.choices[0].message.content or ""
+            # First try strict structured output.
+            resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=True)
+            message = resp.choices[0].message if resp.choices else None
+            content = _extract_message_text(message)
+
+            # If empty, retry once in loose mode to get any useful textual JSON.
+            if not content.strip():
+                resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=False)
+                message = resp.choices[0].message if resp.choices else None
+                content = _extract_message_text(message)
+
             usage = getattr(resp, "usage", None)
             usage_data = {
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
