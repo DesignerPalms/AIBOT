@@ -122,6 +122,10 @@ def plot_from_result(result: Dict[str, Any], container=None) -> None:
 def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
     if not ai_result.get("ok"):
         container.warning(ai_result.get("error", "AI analysis unavailable."))
+        debug = ai_result.get("debug")
+        if debug:
+            with container.expander("AI debug details"):
+                container.json(debug)
         raw = ai_result.get("raw")
         if raw:
             with container.expander("Raw AI response"):
@@ -134,6 +138,11 @@ def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
         container.caption(
             f"Token usage — input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}, total: {usage.get('total_tokens')}"
         )
+
+    debug = ai_result.get("debug")
+    if debug:
+        with container.expander("AI debug details"):
+            container.json(debug)
 
 
 def main() -> None:

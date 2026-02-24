@@ -32,6 +32,25 @@ def _extract_response_text(resp: Any) -> str:
     return "\n".join(parts).strip()
 
 
+
+
+def _build_debug_payload(resp: Any) -> Dict[str, Any]:
+    """Collect lightweight debug fields to explain empty responses."""
+    usage = getattr(resp, "usage", None)
+    out = {
+        "id": getattr(resp, "id", None),
+        "status": getattr(resp, "status", None),
+        "model": getattr(resp, "model", None),
+        "incomplete_details": getattr(resp, "incomplete_details", None),
+        "output_count": len(getattr(resp, "output", None) or []),
+        "usage": {
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        },
+    }
+    return out
+
 def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_output_tokens: int = 500) -> Dict[str, Any]:
     """Send Excel file + user question directly to model, return plain text answer only."""
     api_key = get_openai_api_key()
@@ -70,8 +89,13 @@ def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_o
         )
 
         answer_text = _extract_response_text(resp)
+        debug = _build_debug_payload(resp)
         if not answer_text:
-            answer_text = "The model returned an empty response. Please try again with a clearer question."
+            return {
+                "ok": False,
+                "error": "The model returned an empty response. See debug details below.",
+                "debug": debug,
+            }
 
         usage = getattr(resp, "usage", None)
         usage_data = {
@@ -79,6 +103,6 @@ def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_o
             "output_tokens": getattr(usage, "output_tokens", None),
             "total_tokens": getattr(usage, "total_tokens", None),
         }
-        return {"ok": True, "answer": answer_text, "usage": usage_data}
+        return {"ok": True, "answer": answer_text, "usage": usage_data, "debug": debug}
     except Exception as exc:
         return {"ok": False, "error": f"Full AI analysis failed: {exc}"}

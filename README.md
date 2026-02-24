@@ -56,3 +56,5 @@ setx OPENAI_API_KEY "your_api_key_here"
 - In AI mode, the app sends the uploaded Excel file + your question directly to the model.
 - No JSON contract is required for AI replies; response is plain text only.
 - Supporting local data/charts are not auto-rendered in AI mode now (AI answer only).
+
+- If AI returns empty text, open **AI debug details** in the app to inspect response status, output count, incomplete details, and token usage.
