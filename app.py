@@ -15,7 +15,9 @@ from actions import (
     run_year_totals,
     run_yoy_by_show,
 )
-from ai_router import get_query_plan_with_ai
+from ai_router import get_full_ai_analysis, get_openai_api_key, get_query_plan_with_ai
+
+CSV_CHAR_LIMIT = 200_000
 
 
 def load_and_clean_data(uploaded_file) -> Tuple[Optional[pd.DataFrame], Dict[str, Any], Optional[str]]:
@@ -92,14 +94,15 @@ def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
     return FuncFormatter(lambda y, _: f"{y:,.0f}"), ""
 
 
-def plot_from_result(result: Dict[str, Any]) -> None:
+def plot_from_result(result: Dict[str, Any], container=None) -> None:
+    target = container if container is not None else st
     chart = result.get("chart", {})
     if chart.get("kind") == "none":
         return
 
     data = chart.get("data", result["table"])
     if data is None or len(data) == 0:
-        st.info("No data to chart for this query.")
+        target.info("No data to chart for this query.")
         return
 
     x, y, kind, title = chart.get("x"), chart.get("y"), chart.get("kind"), chart.get("title", "")
@@ -123,7 +126,7 @@ def plot_from_result(result: Dict[str, Any]) -> None:
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.xticks(rotation=45, ha="right")
-    st.pyplot(fig)
+    target.pyplot(fig)
 
 
 def parse_manual_command(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -161,12 +164,70 @@ def execute_plan(df_filtered: pd.DataFrame, plan: Dict[str, Any]) -> Dict[str, A
     raise ValueError("Unsupported action")
 
 
+def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
+    if not ai_result.get("ok"):
+        container.warning(ai_result.get("error", "AI analysis unavailable."))
+        raw = ai_result.get("raw")
+        if raw:
+            with container.expander("Raw AI response"):
+                container.code(raw)
+        return
+
+    payload = ai_result.get("data", {})
+    container.write(payload.get("answer", ""))
+    insights = payload.get("insights", [])
+    for item in insights:
+        container.markdown(f"- {item}")
+
+    tables = payload.get("tables", [])
+    table_map: Dict[str, pd.DataFrame] = {}
+    for t in tables:
+        name = t.get("name", "Table")
+        cols = t.get("columns", [])
+        rows = t.get("rows", [])
+        df_table = pd.DataFrame(rows, columns=cols)
+        table_map[name] = df_table
+        container.markdown(f"**{name}**")
+        container.dataframe(df_table, use_container_width=True)
+
+    chart = payload.get("chart", {})
+    if chart.get("type") in {"bar", "line"}:
+        source_name = chart.get("data", "")
+        chart_df = table_map.get(source_name)
+        if chart_df is None or chart_df.empty:
+            return
+
+        x_col, y_col = chart.get("x"), chart.get("y")
+        if x_col not in chart_df.columns or y_col not in chart_df.columns:
+            return
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        if chart["type"] == "bar":
+            ax.bar(chart_df[x_col], pd.to_numeric(chart_df[y_col], errors="coerce"))
+        else:
+            ax.plot(chart_df[x_col], pd.to_numeric(chart_df[y_col], errors="coerce"), marker="o")
+        ax.set_title(chart.get("title", "AI Chart"))
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        plt.xticks(rotation=45, ha="right")
+        container.pyplot(fig)
+
+    usage = ai_result.get("usage") or {}
+    if usage.get("total_tokens") is not None:
+        container.caption(
+            f"Token usage — prompt: {usage.get('prompt_tokens')}, completion: {usage.get('completion_tokens')}, total: {usage.get('total_tokens')}"
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="Trade Show Sales Analyzer", layout="wide")
     st.title("Trade Show Sales Analyzer")
 
     with st.sidebar:
-        enable_ai = st.toggle("Enable AI", value=False)
+        enable_ai_router = st.toggle("Enable AI router (safe plan)", value=False)
+        full_ai_mode = st.toggle("Experimental: Full AI analysis (send data)", value=False)
+        if full_ai_mode:
+            st.caption("⚠️ This sends your filtered sales data to the model.")
 
     uploaded_file = st.file_uploader("Upload Excel file (.xlsx)", type=["xlsx"])
     if not uploaded_file:
@@ -207,7 +268,6 @@ def main() -> None:
     plot_from_result(run_year_totals(filtered, {}))
     plot_from_result(run_top_shows(filtered, {"n": 10}))
 
-
     st.subheader("Quick Show Trend")
     quick_show = st.selectbox("Select a show to view trend", options=all_shows)
     quick_result = run_show_trend(filtered, {"show": quick_show})
@@ -223,8 +283,11 @@ def main() -> None:
     )
 
     plan_used = None
+    local_result = None
+    ai_full_result: Optional[Dict[str, Any]] = None
+
     if ask_text:
-        if enable_ai:
+        if enable_ai_router:
             plan, ai_error = get_query_plan_with_ai(ask_text, all_shows)
             if ai_error:
                 st.warning(f"AI issue: {ai_error}. Falling back to manual parser.")
@@ -239,10 +302,51 @@ def main() -> None:
             plan_used = plan
 
         if plan_used:
-            result = execute_plan(filtered, plan_used)
-            st.subheader(result["title"])
-            st.dataframe(result["table"], use_container_width=True)
-            plot_from_result(result)
+            local_result = execute_plan(filtered, plan_used)
+
+        if full_ai_mode:
+            if not get_openai_api_key():
+                st.warning(
+                    "OPENAI_API_KEY missing. Set st.secrets['OPENAI_API_KEY'] or environment variable OPENAI_API_KEY."
+                )
+            else:
+                can_send_large = True
+                if len(filtered) > 900:
+                    st.warning("Filtered dataset has more than 900 rows. Confirm before sending to AI.")
+                    can_send_large = st.checkbox("I confirm I want to send >900 filtered rows to AI")
+
+                if can_send_large:
+                    csv_data = filtered[["Show", "Year", "GrossSales"]].to_csv(index=False)
+                    truncated = False
+                    if len(csv_data) > CSV_CHAR_LIMIT:
+                        csv_data = csv_data[:CSV_CHAR_LIMIT]
+                        truncated = True
+                        st.warning("Filtered CSV was truncated to 200,000 characters before sending to AI.")
+
+                    ai_full_result = get_full_ai_analysis(ask_text, csv_data, max_output_tokens=900)
+                    if truncated and ai_full_result is not None:
+                        ai_full_result["truncated"] = True
+
+        if local_result is not None or (full_ai_mode and ai_full_result is not None):
+            left_col, right_col = st.columns(2)
+            with left_col:
+                st.markdown("### Local result")
+                if local_result is None:
+                    st.info("No local result available.")
+                else:
+                    left_col.write(local_result.get("title", "Local analysis"))
+                    left_col.dataframe(local_result["table"], use_container_width=True)
+                    plot_from_result(local_result, container=left_col)
+
+            with right_col:
+                st.markdown("### AI result")
+                if full_ai_mode:
+                    if ai_full_result is None:
+                        st.info("AI result not available.")
+                    else:
+                        render_ai_analysis_result(ai_full_result, right_col)
+                else:
+                    st.info("Enable 'Experimental: Full AI analysis (send data)' to compare.")
 
     with st.expander("Plan used"):
         st.code(json.dumps(plan_used or {}, indent=2), language="json")

@@ -29,6 +29,52 @@ PLAN_SCHEMA: Dict[str, Any] = {
     },
 }
 
+FULL_ANALYSIS_SCHEMA: Dict[str, Any] = {
+    "name": "full_analysis",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "answer": {"type": "string"},
+            "insights": {"type": "array", "items": {"type": "string"}},
+            "tables": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "columns": {"type": "array", "items": {"type": "string"}},
+                        "rows": {
+                            "type": "array",
+                            "items": {
+                                "type": "array",
+                                "items": {"type": ["string", "number", "boolean", "null"]},
+                            },
+                        },
+                    },
+                    "required": ["name", "columns", "rows"],
+                },
+            },
+            "chart": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "type": {"type": "string", "enum": ["bar", "line", "none"]},
+                    "title": {"type": "string"},
+                    "x": {"type": "string"},
+                    "y": {"type": "string"},
+                    "series": {"type": ["string", "null"]},
+                    "data": {"type": "string"},
+                },
+                "required": ["type", "title", "x", "y", "series", "data"],
+            },
+        },
+        "required": ["answer", "insights", "tables", "chart"],
+    },
+}
+
 
 def get_openai_api_key() -> Optional[str]:
     try:
@@ -151,3 +197,51 @@ def get_query_plan_with_ai(user_text: str, show_names: List[str]) -> Tuple[Optio
             last_error = str(exc)
 
     return None, f"AI plan was invalid after retry: {last_error}"
+
+
+def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 900) -> Dict[str, Any]:
+    api_key = get_openai_api_key()
+    if not api_key:
+        return {"ok": False, "error": "OPENAI_API_KEY not found in Streamlit secrets or environment."}
+
+    try:
+        from openai import OpenAI
+    except Exception:
+        return {"ok": False, "error": "openai package is not installed."}
+
+    client = OpenAI(api_key=api_key)
+
+    system_prompt = (
+        "You are a data analyst. Use only the provided CSV data to answer. "
+        "Return JSON only matching the schema. Do not output code."
+    )
+    user_payload = {
+        "question": question,
+        "csv": csv_data,
+        "rules": "Use only CSV; provide short answer, insights, optional tables and chart instruction.",
+    }
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-5-mini",
+            max_completion_tokens=max_output_tokens,
+            response_format={"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload)},
+            ],
+        )
+        content = resp.choices[0].message.content or ""
+        usage = getattr(resp, "usage", None)
+        usage_data = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+        try:
+            parsed = json.loads(content)
+            return {"ok": True, "data": parsed, "raw": content, "usage": usage_data}
+        except Exception:
+            return {"ok": False, "error": "AI returned invalid JSON.", "raw": content, "usage": usage_data}
+    except Exception as exc:
+        return {"ok": False, "error": f"Full AI analysis failed: {exc}"}

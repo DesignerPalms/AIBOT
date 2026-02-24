@@ -78,3 +78,14 @@ If AI output is invalid, app retries once, then falls back to manual parser.
 - `trend <show name>`
 - `year totals`
 - `biggest yoy increase`
+
+
+## Experimental: Full AI analysis (send data)
+- Turn on **Experimental: Full AI analysis (send data)** in the sidebar.
+- Warning: this sends your **filtered** `Show, Year, GrossSales` rows to the model.
+- The app shows both:
+  - **Local result** (trusted local pandas actions)
+  - **AI result** (model-generated JSON answer, insights, tables, chart instructions)
+- If filtered rows exceed 900, the app asks for confirmation before sending.
+- CSV payload is capped at 200,000 characters to control token usage.
+
