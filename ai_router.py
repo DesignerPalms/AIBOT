@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
@@ -199,6 +200,35 @@ def get_query_plan_with_ai(user_text: str, show_names: List[str]) -> Tuple[Optio
     return None, f"AI plan was invalid after retry: {last_error}"
 
 
+
+
+def _parse_json_flex(raw_text: str) -> Dict[str, Any]:
+    """Parse JSON robustly even if model wraps it in markdown/code fences."""
+    text = (raw_text or "").strip()
+    if not text:
+        raise ValueError("Empty response")
+
+    # Direct parse first.
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Strip fenced code blocks like ```json ... ```
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        return json.loads(candidate)
+
+    # Fallback: find largest JSON object slice.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
+        return json.loads(candidate)
+
+    raise ValueError("No JSON object found in response")
+
 def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 900) -> Dict[str, Any]:
     api_key = get_openai_api_key()
     if not api_key:
@@ -221,27 +251,39 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
         "rules": "Use only CSV; provide short answer, insights, optional tables and chart instruction.",
     }
 
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-5-mini",
-            max_completion_tokens=max_output_tokens,
-            response_format={"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload)},
-            ],
-        )
-        content = resp.choices[0].message.content or ""
-        usage = getattr(resp, "usage", None)
-        usage_data = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "total_tokens": getattr(usage, "total_tokens", None),
-        }
+    last_raw = ""
+    last_usage_data: Dict[str, Any] = {}
+    last_err = None
+
+    for _ in range(2):
         try:
-            parsed = json.loads(content)
+            resp = client.chat.completions.create(
+                model="gpt-5-mini",
+                max_completion_tokens=max_output_tokens,
+                response_format={"type": "json_schema", "json_schema": FULL_ANALYSIS_SCHEMA},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload)},
+                ],
+            )
+            content = resp.choices[0].message.content or ""
+            usage = getattr(resp, "usage", None)
+            usage_data = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+            last_raw = content
+            last_usage_data = usage_data
+
+            parsed = _parse_json_flex(content)
             return {"ok": True, "data": parsed, "raw": content, "usage": usage_data}
-        except Exception:
-            return {"ok": False, "error": "AI returned invalid JSON.", "raw": content, "usage": usage_data}
-    except Exception as exc:
-        return {"ok": False, "error": f"Full AI analysis failed: {exc}"}
+        except Exception as exc:
+            last_err = str(exc)
+
+    return {
+        "ok": False,
+        "error": f"AI returned invalid JSON after retry: {last_err}",
+        "raw": last_raw,
+        "usage": last_usage_data,
+    }
