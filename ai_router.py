@@ -137,7 +137,6 @@ def get_query_plan_with_ai(user_text: str, show_names: List[str]) -> Tuple[Optio
         try:
             resp = client.chat.completions.create(
                 model="gpt-5-mini",
-                temperature=0,
                 response_format={"type": "json_schema", "json_schema": PLAN_SCHEMA},
                 messages=[
                     {"role": "system", "content": _build_system_prompt()},
