@@ -207,6 +207,16 @@ def main() -> None:
     plot_from_result(run_year_totals(filtered, {}))
     plot_from_result(run_top_shows(filtered, {"n": 10}))
 
+
+    st.subheader("Quick Show Trend")
+    quick_show = st.selectbox("Select a show to view trend", options=all_shows)
+    quick_result = run_show_trend(filtered, {"show": quick_show})
+    if quick_result["table"].empty:
+        st.info("No trend data for selected show under current filters.")
+    else:
+        st.dataframe(quick_result["table"], use_container_width=True)
+        plot_from_result(quick_result)
+
     ask_text = st.text_input(
         "Ask (manual commands or AI plan)",
         placeholder="Examples: top shows | trend CES | yoy percent by show in 2021-2024",
