@@ -53,10 +53,8 @@ setx OPENAI_API_KEY "your_api_key_here"
 - Turn on **Enable AI analysis (send filtered data)** in the sidebar.
 - Warning: this sends your **filtered** `Show, Year, GrossSales` rows to the model.
 - Ask a question in the main input box and the app will return:
-  - short answer
-  - key insights
-  - relevant table(s) when available
-  - relevant chart(s) when available
+  - a short AI text answer
+  - supporting local data table(s) and chart(s) when the question maps to known analysis patterns (e.g., break/return, trend, top shows, year totals)
 - If filtered rows exceed 900, the app asks for confirmation before sending.
 - CSV payload is capped at 200,000 characters to control token usage.
-- If structured JSON parsing fails, the app now retries and falls back to a plain-text AI answer; for break/return questions it also shows a supplemental local break-analysis table/chart.
+- AI mode uses plain-text responses (no JSON contract required), then adds trusted local supporting analysis where applicable.

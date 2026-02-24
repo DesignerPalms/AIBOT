@@ -130,40 +130,7 @@ def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
                 container.code(raw)
         return
 
-    payload = ai_result.get("data", {})
-    container.write(payload.get("answer", ""))
-    for item in payload.get("insights", []):
-        container.markdown(f"- {item}")
-
-    tables = payload.get("tables", [])
-    table_map: Dict[str, pd.DataFrame] = {}
-    for t in tables:
-        name = t.get("name", "Table")
-        cols = t.get("columns", [])
-        rows = t.get("rows", [])
-        df_table = pd.DataFrame(rows, columns=cols)
-        table_map[name] = df_table
-        container.markdown(f"**{name}**")
-        container.dataframe(df_table, use_container_width=True)
-
-    chart = payload.get("chart", {})
-    if chart.get("type") in {"bar", "line"}:
-        source_name = chart.get("data", "")
-        chart_df = table_map.get(source_name)
-        if chart_df is not None and not chart_df.empty:
-            x_col, y_col = chart.get("x"), chart.get("y")
-            if x_col in chart_df.columns and y_col in chart_df.columns:
-                fig, ax = plt.subplots(figsize=(8, 4))
-                if chart["type"] == "bar":
-                    ax.bar(chart_df[x_col], pd.to_numeric(chart_df[y_col], errors="coerce"))
-                else:
-                    ax.plot(chart_df[x_col], pd.to_numeric(chart_df[y_col], errors="coerce"), marker="o")
-                ax.set_title(chart.get("title", "AI Chart"))
-                ax.set_xlabel(x_col)
-                ax.set_ylabel(y_col)
-                plt.xticks(rotation=45, ha="right")
-                container.pyplot(fig)
-
+    container.write(ai_result.get("answer", ""))
     usage = ai_result.get("usage") or {}
     if usage.get("total_tokens") is not None:
         container.caption(
@@ -171,14 +138,40 @@ def render_ai_analysis_result(ai_result: Dict[str, Any], container) -> None:
         )
 
 
-
 def maybe_render_local_fallback(question: str, filtered: pd.DataFrame) -> None:
     q = question.lower()
+
+    # Heuristic local support for the AI answer (trusted pandas analytics).
     if "break" in q or "return" in q:
-        st.markdown("### Supplemental local analysis (break/return)")
-        fallback = run_return_after_break(filtered, {"min_gap_years": 2, "pre_window": 2, "post_window": 0})
-        st.dataframe(fallback["table"], use_container_width=True)
-        plot_from_result(fallback)
+        st.markdown("### Supporting local data (break/return)")
+        result = run_return_after_break(filtered, {"min_gap_years": 2, "pre_window": 2, "post_window": 0})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+
+    if "trend" in q:
+        for show in sorted(filtered["Show"].unique().tolist()):
+            if show.lower() in q:
+                st.markdown(f"### Supporting local data (trend for {show})")
+                result = run_show_trend(filtered, {"show": show})
+                st.dataframe(result["table"], use_container_width=True)
+                plot_from_result(result)
+                return
+
+    if "top" in q:
+        st.markdown("### Supporting local data (top shows)")
+        result = run_top_shows(filtered, {"n": 10})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+
+    if "year" in q or "annual" in q:
+        st.markdown("### Supporting local data (year totals)")
+        result = run_year_totals(filtered, {})
+        st.dataframe(result["table"], use_container_width=True)
+        plot_from_result(result)
+        return
+
 
 def main() -> None:
     st.set_page_config(page_title="Trade Show Sales Analyzer", layout="wide")
@@ -260,10 +253,9 @@ def main() -> None:
                     csv_data = csv_data[:CSV_CHAR_LIMIT]
                     st.warning("Filtered CSV was truncated to 200,000 characters before sending to AI.")
 
-                ai_result = get_full_ai_analysis(ask_text, csv_data, max_output_tokens=900)
+                ai_result = get_full_ai_analysis(ask_text, csv_data, max_output_tokens=500)
                 render_ai_analysis_result(ai_result, st)
-                if ai_result.get("degraded"):
-                    maybe_render_local_fallback(ask_text, filtered)
+                maybe_render_local_fallback(ask_text, filtered)
 
     with st.expander("How calculated"):
         st.write(f"Filtered row count: {len(filtered)}")

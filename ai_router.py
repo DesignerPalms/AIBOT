@@ -270,7 +270,8 @@ def _chat_completion_request(client: Any, system_prompt: str, user_payload: Dict
 
     return client.chat.completions.create(**kwargs)
 
-def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 900) -> Dict[str, Any]:
+def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 500) -> Dict[str, Any]:
+    """Plain-text AI analysis mode: no JSON contract/parsing required."""
     api_key = get_openai_api_key()
     if not api_key:
         return {"ok": False, "error": "OPENAI_API_KEY not found in Streamlit secrets or environment."}
@@ -283,77 +284,30 @@ def get_full_ai_analysis(question: str, csv_data: str, max_output_tokens: int = 
     client = OpenAI(api_key=api_key)
 
     system_prompt = (
-        "You are a data analyst. Use only the provided CSV data to answer. "
-        "Return JSON only matching the schema. Do not output code."
+        "You are a sales analyst. Use only the provided CSV data. "
+        "Return a short, direct answer in plain text (2-5 sentences). "
+        "Do not return JSON or code."
     )
     user_payload = {
         "question": question,
         "csv": csv_data,
-        "rules": "Use only CSV; provide short answer, insights, optional tables and chart instruction.",
     }
 
-    last_raw = ""
-    last_usage_data: Dict[str, Any] = {}
-    last_err = None
-
-    for _ in range(2):
-        try:
-            # First try strict structured output.
-            resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=True)
-            message = resp.choices[0].message if resp.choices else None
-            content = _extract_message_text(message)
-
-            # If empty, retry once in loose mode to get any useful textual JSON.
-            if not content.strip():
-                resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=False)
-                message = resp.choices[0].message if resp.choices else None
-                content = _extract_message_text(message)
-
-            usage = getattr(resp, "usage", None)
-            usage_data = {
-                "prompt_tokens": getattr(usage, "prompt_tokens", None),
-                "completion_tokens": getattr(usage, "completion_tokens", None),
-                "total_tokens": getattr(usage, "total_tokens", None),
-            }
-            last_raw = content
-            last_usage_data = usage_data
-
-            parsed = _parse_json_flex(content)
-            return {"ok": True, "data": parsed, "raw": content, "usage": usage_data, "degraded": False}
-        except Exception as exc:
-            last_err = str(exc)
-
-    # Final rescue: request plain-text answer if JSON extraction repeatedly fails.
-    rescue_text = ""
     try:
-        rescue_payload = {
-            "question": question,
-            "csv": csv_data,
-            "rules": "Use only CSV. Return concise plain text with a short answer and 3 bullet insights.",
-        }
-        rescue_resp = _chat_completion_request(client, system_prompt, rescue_payload, 500, structured=False)
-        rescue_message = rescue_resp.choices[0].message if rescue_resp.choices else None
-        rescue_text = _extract_message_text(rescue_message)
-    except Exception:
-        rescue_text = ""
+        resp = _chat_completion_request(client, system_prompt, user_payload, max_output_tokens, structured=False)
+        message = resp.choices[0].message if resp.choices else None
+        answer_text = _extract_message_text(message).strip()
 
-    fallback_answer = (
-        rescue_text.strip()
-        or (last_raw or "").strip()
-        or f"I could not parse a structured JSON response from the model. Raw parser error: {last_err}"
-    )
-    return {
-        "ok": True,
-        "data": {
-            "answer": fallback_answer,
-            "insights": [
-                "Structured JSON parsing failed; showing best available model text.",
-                "The app can still show relevant local fallback analysis for some question types.",
-            ],
-            "tables": [],
-            "chart": {"type": "none", "title": "", "x": "", "y": "", "series": None, "data": ""},
-        },
-        "raw": last_raw,
-        "usage": last_usage_data,
-        "degraded": True,
-    }
+        usage = getattr(resp, "usage", None)
+        usage_data = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+
+        if not answer_text:
+            answer_text = "The model returned an empty text response. Try reducing filters or asking a narrower question."
+
+        return {"ok": True, "answer": answer_text, "usage": usage_data}
+    except Exception as exc:
+        return {"ok": False, "error": f"Full AI analysis failed: {exc}"}
