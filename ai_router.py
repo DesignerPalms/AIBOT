@@ -37,12 +37,14 @@ def _extract_response_text(resp: Any) -> str:
 def _build_debug_payload(resp: Any) -> Dict[str, Any]:
     """Collect lightweight debug fields to explain empty responses."""
     usage = getattr(resp, "usage", None)
+    output_items = getattr(resp, "output", None) or []
     out = {
         "id": getattr(resp, "id", None),
         "status": getattr(resp, "status", None),
         "model": getattr(resp, "model", None),
         "incomplete_details": getattr(resp, "incomplete_details", None),
-        "output_count": len(getattr(resp, "output", None) or []),
+        "output_count": len(output_items),
+        "output_types": [getattr(item, "type", None) for item in output_items],
         "usage": {
             "input_tokens": getattr(usage, "input_tokens", None),
             "output_tokens": getattr(usage, "output_tokens", None),

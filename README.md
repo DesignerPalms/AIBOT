@@ -58,3 +58,5 @@ setx OPENAI_API_KEY "your_api_key_here"
 - Supporting local data/charts are not auto-rendered in AI mode now (AI answer only).
 
 - If AI returns empty text, open **AI debug details** in the app to inspect response status, output count, incomplete details, and token usage.
+
+- If AI still returns no final text, check **AI debug details** for `incomplete_details`, `output_types`, and `token_budget`; the app now retries with a higher output budget automatically.
