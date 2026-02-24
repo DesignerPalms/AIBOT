@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 import pandas as pd
 import streamlit as st
 
@@ -90,6 +91,19 @@ def format_currency(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def get_sales_axis_formatter(values: pd.Series) -> Tuple[FuncFormatter, str]:
+    """Return a readable y-axis formatter and unit suffix based on data magnitude."""
+    max_abs = float(values.abs().max()) if len(values) else 0.0
+
+    if max_abs >= 1_000_000:
+        return FuncFormatter(lambda y, _: f"{y / 1_000_000:,.1f}"), "(Millions)"
+    if max_abs >= 100_000:
+        return FuncFormatter(lambda y, _: f"{y / 100_000:,.1f}"), "(100,000s)"
+    if max_abs >= 1_000:
+        return FuncFormatter(lambda y, _: f"{y / 1_000:,.1f}"), "(Thousands)"
+    return FuncFormatter(lambda y, _: f"{y:,.0f}"), "(Dollars)"
+
+
 def action_top_shows(df: pd.DataFrame, n: int = 10) -> None:
     top = (
         df.groupby("Show", as_index=False)["GrossSales"]
@@ -112,9 +126,11 @@ def action_trend_show(df: pd.DataFrame, show_name: str) -> None:
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(trend["Year"], trend["GrossSales"], marker="o")
+    formatter, unit_label = get_sales_axis_formatter(trend["GrossSales"])
+    ax.yaxis.set_major_formatter(formatter)
     ax.set_title(f"Sales Trend: {show_name}")
     ax.set_xlabel("Year")
-    ax.set_ylabel("Gross Sales")
+    ax.set_ylabel(f"Gross Sales {unit_label}")
     ax.grid(alpha=0.3)
     st.pyplot(fig)
 
@@ -125,9 +141,11 @@ def action_year_totals(df: pd.DataFrame) -> None:
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.bar(totals["Year"].astype(str), totals["GrossSales"])
+    formatter, unit_label = get_sales_axis_formatter(totals["GrossSales"])
+    ax.yaxis.set_major_formatter(formatter)
     ax.set_title("Total Sales by Year")
     ax.set_xlabel("Year")
-    ax.set_ylabel("Gross Sales")
+    ax.set_ylabel(f"Gross Sales {unit_label}")
     plt.xticks(rotation=45)
     st.pyplot(fig)
 
@@ -318,9 +336,11 @@ def main() -> None:
     by_year = filtered.groupby("Year", as_index=False)["GrossSales"].sum().sort_values("Year")
     fig1, ax1 = plt.subplots(figsize=(8, 4))
     ax1.bar(by_year["Year"].astype(str), by_year["GrossSales"])
+    formatter1, unit_label1 = get_sales_axis_formatter(by_year["GrossSales"])
+    ax1.yaxis.set_major_formatter(formatter1)
     ax1.set_title("Total Sales by Year")
     ax1.set_xlabel("Year")
-    ax1.set_ylabel("Gross Sales")
+    ax1.set_ylabel(f"Gross Sales {unit_label1}")
     plt.xticks(rotation=45)
     st.pyplot(fig1)
 
@@ -334,9 +354,11 @@ def main() -> None:
     )
     fig2, ax2 = plt.subplots(figsize=(8, 4))
     ax2.bar(by_show["Show"], by_show["GrossSales"])
+    formatter2, unit_label2 = get_sales_axis_formatter(by_show["GrossSales"])
+    ax2.yaxis.set_major_formatter(formatter2)
     ax2.set_title(f"Top {top_n} Shows by Total Sales")
     ax2.set_xlabel("Show")
-    ax2.set_ylabel("Gross Sales")
+    ax2.set_ylabel(f"Gross Sales {unit_label2}")
     plt.xticks(rotation=45, ha="right")
     st.pyplot(fig2)
 
@@ -362,9 +384,11 @@ def main() -> None:
             )
             fig3, ax3 = plt.subplots(figsize=(8, 4))
             ax3.plot(trend["Year"], trend["GrossSales"], marker="o")
+            formatter3, unit_label3 = get_sales_axis_formatter(trend["GrossSales"])
+            ax3.yaxis.set_major_formatter(formatter3)
             ax3.set_title(f"Trend for {show_choice}")
             ax3.set_xlabel("Year")
-            ax3.set_ylabel("Gross Sales")
+            ax3.set_ylabel(f"Gross Sales {unit_label3}")
             ax3.grid(alpha=0.3)
             st.pyplot(fig3)
     else:
