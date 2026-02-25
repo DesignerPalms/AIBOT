@@ -53,7 +53,7 @@ def _build_debug_payload(resp: Any) -> Dict[str, Any]:
     }
     return out
 
-def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_output_tokens: int = 500) -> Dict[str, Any]:
+def get_full_ai_analysis(question: str, excel_bytes: bytes, filename: str, max_output_tokens: int = 20000) -> Dict[str, Any]:
     """Send Excel file + user question directly to model, return plain text answer only."""
     api_key = get_openai_api_key()
     if not api_key:

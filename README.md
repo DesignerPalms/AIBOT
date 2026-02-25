@@ -60,3 +60,5 @@ setx OPENAI_API_KEY "your_api_key_here"
 - If AI returns empty text, open **AI debug details** in the app to inspect response status, output count, incomplete details, and token usage.
 
 - If AI still returns no final text, check **AI debug details** for `incomplete_details`, `output_types`, and `token_budget`; the app now retries with a higher output budget automatically.
+
+- AI answer token budget is set high (`max_output_tokens=20000`) to reduce truncation/incomplete responses.

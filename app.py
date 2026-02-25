@@ -228,7 +228,7 @@ def main() -> None:
                     ask_text,
                     excel_bytes=excel_bytes,
                     filename=uploaded_file.name,
-                    max_output_tokens=900,
+                    max_output_tokens=20000,
                 )
                 render_ai_analysis_result(ai_result, st)
 
